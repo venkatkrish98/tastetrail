@@ -43,7 +43,9 @@ export function getValidatedQlooBaseUrl(): string {
   }
 }
 
-const QLOO_API_KEY = process.env.QLOO_API_KEY || '';
+export function getQlooApiKey(): string {
+  return process.env.QLOO_API_KEY?.trim() || '';
+}
 
 // In-memory server-side TTL cache (15 minutes)
 interface CacheEntry<T> {
@@ -72,10 +74,11 @@ function setCache<T>(key: string, data: T): void {
 }
 
 export function isLiveQlooConfigured(): boolean {
+  const key = getQlooApiKey();
   return Boolean(
-    QLOO_API_KEY &&
-    QLOO_API_KEY !== 'your_hackathon_api_key_here' &&
-    QLOO_API_KEY.trim().length > 5
+    key &&
+    key !== 'your_hackathon_api_key_here' &&
+    key.length > 5
   );
 }
 
@@ -159,7 +162,7 @@ export async function searchQlooEntities(
       method: 'GET',
       headers: {
         'Accept': 'application/json',
-        'X-Api-Key': QLOO_API_KEY,
+        'X-Api-Key': getQlooApiKey(),
       },
       signal: controller.signal,
     });
@@ -247,7 +250,7 @@ export async function fetchQlooPlaceInsights(params: {
       method: 'GET',
       headers: {
         'Accept': 'application/json',
-        'X-Api-Key': QLOO_API_KEY,
+        'X-Api-Key': getQlooApiKey(),
       },
       signal: controller.signal,
     });
@@ -483,3 +486,7 @@ export async function verifyLiveQlooConnectivity(forceFresh = false): Promise<{
   return inFlightProbePromise;
 }
 
+export function clearProbeCacheForTesting(): void {
+  cachedProbeResult = null;
+  inFlightProbePromise = null;
+}

@@ -13,11 +13,17 @@ import {
   parseQlooSearchItems,
   parseQlooInsightsItems,
   verifyLiveQlooConnectivity,
+  clearProbeCacheForTesting,
 } from '../lib/qloo-client';
 import { checkRateLimit, extractClientIp, isValidIp } from '../lib/rate-limiter';
 import { readBoundedJsonPayload, MAX_PAYLOAD_BYTES } from '../lib/payload-validator';
 import { middleware } from '../middleware';
-import { signSessionId, verifySessionToken } from '../lib/session-token';
+import {
+  signSessionId,
+  verifySessionToken,
+  getSessionSecret,
+  resetEphemeralSecretForTesting,
+} from '../lib/session-token';
 import { OutingRequest } from '../lib/types';
 import { NextRequest } from 'next/server';
 
@@ -145,6 +151,24 @@ async function runTestSuite() {
   assert((await verifySessionToken(signedToken1)) === validUuid1, 'verifySessionToken validates genuine server-signed token');
   assert((await verifySessionToken('invalid.token')) === null, 'verifySessionToken returns null for forged token');
   assert((await verifySessionToken('')) === null, 'verifySessionToken handles empty string gracefully');
+
+  // Ephemeral Secret & Known-Default Attack Immunity
+  const activeSecret = getSessionSecret();
+  assert(activeSecret.length >= 16, 'Server session secret is high-entropy (length >= 16 characters)');
+  assert(
+    activeSecret !== 'tastetrail_secure_session_secret_2026_default_key',
+    'Immune to public default secret: Server does not use any hardcoded static secret from source'
+  );
+
+  // Attacker attempt 4: Cookie signed with a different key is strictly rejected by runtime
+  resetEphemeralSecretForTesting('isolated_attacker_static_key_12345');
+  const attackerSignedWithOldKey = await signSessionId(validUuid1);
+  resetEphemeralSecretForTesting(); // restore active runtime secret
+  const rejectedOldKeyCheck = await verifySessionToken(attackerSignedWithOldKey);
+  assert(
+    rejectedOldKeyCheck === null,
+    'Strictly rejects cookies signed with external/unauthorized secret keys'
+  );
 
   // 2b. Trusted Proxy Mode (TRUST_PROXY_HEADERS === 'true')
   process.env.TRUST_PROXY_HEADERS = 'true';
@@ -329,26 +353,70 @@ async function runTestSuite() {
     console.log('  [INFO] QLOO_API_KEY not configured in environment. Schema parsers and security validation passed.');
   }
 
-  // 4f. Live Connectivity Verification & Singleflight In-Flight Deduplication
-  const probeStatus = await verifyLiveQlooConnectivity();
-  assert(typeof probeStatus.configured === 'boolean', 'Probes connectivity truthfully reporting configured flag');
-  assert(typeof probeStatus.connected === 'boolean', 'Reports connection status truthfully');
+  // 4f. Live Connectivity Verification & Singleflight In-Flight Deduplication Test (Mock Upstream Network)
+  clearProbeCacheForTesting();
+  const savedKey = process.env.QLOO_API_KEY;
+  const originalFetch = globalThis.fetch;
+  let upstreamFetchCount = 0;
 
-  // Singleflight deduplication test: launch 5 simultaneous concurrent probe requests
-  const concurrentProbes = await Promise.all([
-    verifyLiveQlooConnectivity(),
-    verifyLiveQlooConnectivity(),
-    verifyLiveQlooConnectivity(),
-    verifyLiveQlooConnectivity(),
-    verifyLiveQlooConnectivity(),
-  ]);
-  assert(
-    concurrentProbes.every(p => p.configured === probeStatus.configured),
-    'Singleflight deduplication cleanly handles 5 simultaneous concurrent probe requests without race conditions'
-  );
+  try {
+    process.env.QLOO_API_KEY = 'mock_live_probe_key_for_testing';
+    // Mock upstream Qloo fetch with simulated 40ms network latency
+    globalThis.fetch = (async () => {
+      upstreamFetchCount++;
+      await new Promise(r => setTimeout(r, 40));
+      return new Response(
+        JSON.stringify({
+          entities: [
+            { id: 'ent_mock_artist', name: 'Miles Davis', type: 'urn:entity:artist', score: 0.95 }
+          ]
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }) as typeof fetch;
 
-  const probeStatusCached = await verifyLiveQlooConnectivity();
-  assert(probeStatusCached.configured === probeStatus.configured, 'Consistent probe responses between consecutive calls');
+    // Launch 5 simultaneous concurrent calls during the active network fetch window
+    const concurrentProbePromises = [
+      verifyLiveQlooConnectivity(),
+      verifyLiveQlooConnectivity(),
+      verifyLiveQlooConnectivity(),
+      verifyLiveQlooConnectivity(),
+      verifyLiveQlooConnectivity(),
+    ];
+
+    const concurrentResults = await Promise.all(concurrentProbePromises);
+
+    assert(
+      upstreamFetchCount === 1,
+      `Singleflight deduplication collapses 5 simultaneous concurrent calls into EXACTLY 1 upstream fetch (got ${upstreamFetchCount})`
+    );
+    assert(
+      concurrentResults.every(r => r.configured === true && r.connected === true),
+      'All 5 concurrent callers receive the identical verified connection result'
+    );
+
+    // Test 5-minute TTL cache hit on subsequent call
+    const cachedCall = await verifyLiveQlooConnectivity();
+    assert(cachedCall.cached === true, 'Subsequent call within 5-minute TTL returns cached result');
+    assert(
+      upstreamFetchCount === 1,
+      `5-minute cache hit prevents any additional upstream fetch (count remained ${upstreamFetchCount})`
+    );
+
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (savedKey !== undefined) {
+      process.env.QLOO_API_KEY = savedKey;
+    } else {
+      delete process.env.QLOO_API_KEY;
+    }
+    clearProbeCacheForTesting();
+  }
+
+  // Also verify offline keyless status reporting
+  const offlineStatus = await verifyLiveQlooConnectivity();
+  assert(offlineStatus.configured === false, 'Probes offline status truthfully reporting configured: false when key is absent');
+  assert(offlineStatus.connected === false, 'Reports offline connection status truthfully');
 
   // 4g. Middleware Session Cookie Provisioning & HMAC Cryptographic Integrity
   const mockHttpReq = new NextRequest('http://localhost:3000/');

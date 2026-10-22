@@ -2,17 +2,44 @@
  * Web Crypto API-based HMAC-SHA256 session token signer & verifier.
  * - 100% compliant with Next.js Edge Runtime and standard Node.js without relying on 'node:crypto'.
  * - Timing-attack safe verification via crypto.subtle.verify.
+ * - Dynamic Ephemeral Secret Protection: If SESSION_SECRET is not provided, generates
+ *   an unguessable in-memory random secret per server boot, completely eliminating
+ *   any hardcoded public default vulnerability.
  */
 
-const SESSION_SECRET =
-  process.env.SESSION_SECRET || 'tastetrail_secure_session_secret_2026_default_key';
+let ephemeralRuntimeSecret: string | null = null;
+
+export function getSessionSecret(): string {
+  const configuredSecret = process.env.SESSION_SECRET?.trim();
+  if (configuredSecret && configuredSecret.length >= 16) {
+    return configuredSecret;
+  }
+
+  if (process.env.NODE_ENV === 'production' && !configuredSecret) {
+    console.warn(
+      '[Security Warning] SESSION_SECRET is not configured in production environment. ' +
+      'Using dynamic per-process ephemeral secret. ' +
+      'Please set a permanent SESSION_SECRET (32+ chars) in your production environment variables.'
+    );
+  }
+
+  if (!ephemeralRuntimeSecret) {
+    ephemeralRuntimeSecret = `${crypto.randomUUID()}-${crypto.randomUUID()}-${Date.now()}`;
+  }
+  return ephemeralRuntimeSecret;
+}
+
+export function resetEphemeralSecretForTesting(customSecret?: string): void {
+  ephemeralRuntimeSecret = customSecret || null;
+}
 
 const encoder = new TextEncoder();
 
 async function getHmacKey(): Promise<CryptoKey> {
+  const secret = getSessionSecret();
   return crypto.subtle.importKey(
     'raw',
-    encoder.encode(SESSION_SECRET),
+    encoder.encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign', 'verify']
