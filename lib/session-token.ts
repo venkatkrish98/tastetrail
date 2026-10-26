@@ -8,6 +8,7 @@
  */
 
 let ephemeralRuntimeSecret: string | null = null;
+let warnedMissingSecret = false;
 
 export function getSessionSecret(): string {
   const configuredSecret = process.env.SESSION_SECRET?.trim();
@@ -15,7 +16,8 @@ export function getSessionSecret(): string {
     return configuredSecret;
   }
 
-  if (process.env.NODE_ENV === 'production' && !configuredSecret) {
+  if (process.env.NODE_ENV === 'production' && !configuredSecret && !warnedMissingSecret) {
+    warnedMissingSecret = true;
     console.warn(
       '[Security Warning] SESSION_SECRET is not configured in production environment. ' +
       'Using dynamic per-process ephemeral secret. ' +

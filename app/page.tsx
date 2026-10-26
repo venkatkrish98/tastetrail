@@ -86,12 +86,12 @@ export default function HomePage() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
       {/* App Header */}
       <Header onOpenJudgeGuide={() => setIsJudgeGuideOpen(true)} />
 
       {/* Main Content Area */}
-      <main className="container" style={{ flex: 1, padding: '2.5rem 1.25rem 3rem 1.25rem' }}>
+      <main className="container" style={{ padding: '2.5rem 1.25rem 0 1.25rem' }}>
         {/* Hero Section */}
         <div style={{ textAlign: 'center', maxWidth: '780px', margin: '0 auto 2.5rem auto' }}>
           <div style={{

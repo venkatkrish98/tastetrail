@@ -7,8 +7,8 @@ export function Footer() {
     <footer style={{
       borderTop: '1px solid var(--border-subtle)',
       backgroundColor: 'var(--bg-secondary)',
-      padding: '2.5rem 0 2rem 0',
-      marginTop: '4rem',
+      padding: '2rem 0',
+      marginTop: '2.5rem',
     }}>
       <div className="container" style={{
         display: 'flex',
