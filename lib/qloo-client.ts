@@ -91,7 +91,7 @@ export function parseQlooSearchItems(
   entityType?: string
 ): DisambiguationCandidate[] {
   const obj = json as Record<string, unknown> | null;
-  const rawItems: Array<{
+  let rawItems: Array<{
     id?: string;
     entity_id?: string;
     name?: string;
@@ -102,13 +102,44 @@ export function parseQlooSearchItems(
     description?: string;
     score?: number;
     popularity?: number;
-  }> =
-    (obj?.response as Record<string, unknown>)?.entities as [] ||
-    obj?.entities as [] ||
-    obj?.results as [] ||
-    obj?.data as [] ||
-    (Array.isArray(obj?.response) ? obj.response : []) ||
-    (Array.isArray(json) ? json : []);
+  }> = [];
+
+  if (!obj || typeof obj !== 'object') {
+    return Array.isArray(json)
+      ? (json as Array<{ id?: string; entity_id?: string; name?: string; title?: string; type?: string; entity_type?: string; category?: string; description?: string; score?: number }>)
+          .slice(0, 5)
+          .map((item, idx) => ({
+            id: item.id || item.entity_id || `qloo-entity-${idx}`,
+            name: item.name || item.title || query,
+            type: item.type || item.entity_type || item.category || entityType || 'urn:entity',
+            description: item.description,
+            score: typeof item.score === 'number' ? item.score : null,
+          }))
+      : [];
+  }
+
+  const resObj = obj.response as Record<string, unknown> | undefined;
+  const resultsObj = obj.results as Record<string, unknown> | undefined;
+
+  if (Array.isArray(obj.entities)) {
+    rawItems = obj.entities;
+  } else if (resObj && Array.isArray(resObj.entities)) {
+    rawItems = resObj.entities as [];
+  } else if (Array.isArray(obj.results)) {
+    rawItems = obj.results;
+  } else if (resultsObj && Array.isArray(resultsObj.entities)) {
+    rawItems = resultsObj.entities as [];
+  } else if (Array.isArray(obj.data)) {
+    rawItems = obj.data;
+  } else if (Array.isArray(obj.response)) {
+    rawItems = obj.response;
+  } else if (Array.isArray(json)) {
+    rawItems = json;
+  }
+
+  if (!Array.isArray(rawItems)) {
+    return [];
+  }
 
   return rawItems.slice(0, 5).map((item, idx) => ({
     id: item.id || item.entity_id || `qloo-entity-${idx}`,
@@ -294,60 +325,125 @@ export function parseQlooInsightsItems(
   cityName: string
 ): QlooRawPlaceCandidate[] {
   const obj = json as Record<string, unknown> | null;
-  const rawResults: Array<{
-    id?: string;
-    entity_id?: string;
-    name?: string;
-    title?: string;
-    type?: string;
-    category?: string;
-    affinity?: number;
-    score?: number;
-    location?: { lat?: number; lng?: number; address?: string; neighborhood?: string };
-    attributes?: string[];
-    price_tier?: string;
-    price?: string;
-  }> =
-    (obj?.response as Record<string, unknown>)?.results as [] ||
-    (obj?.response as Record<string, unknown>)?.entities as [] ||
-    obj?.results as [] ||
-    obj?.entities as [] ||
-    obj?.data as [] ||
-    (Array.isArray(obj?.response) ? obj.response : []) ||
-    (Array.isArray(json) ? json : []);
+  let rawResults: Array<Record<string, unknown>> = [];
 
-  if (!rawResults || rawResults.length === 0) {
+  if (!obj || typeof obj !== 'object') {
+    return [];
+  }
+
+  const resObj = obj.response as Record<string, unknown> | undefined;
+  const resultsObj = obj.results as Record<string, unknown> | undefined;
+
+  if (Array.isArray(obj.results)) {
+    rawResults = obj.results as Array<Record<string, unknown>>;
+  } else if (resultsObj && Array.isArray(resultsObj.entities)) {
+    rawResults = resultsObj.entities as Array<Record<string, unknown>>;
+  } else if (resObj && Array.isArray(resObj.results)) {
+    rawResults = resObj.results as Array<Record<string, unknown>>;
+  } else if (resObj && Array.isArray(resObj.entities)) {
+    rawResults = resObj.entities as Array<Record<string, unknown>>;
+  } else if (Array.isArray(obj.entities)) {
+    rawResults = obj.entities as Array<Record<string, unknown>>;
+  } else if (Array.isArray(obj.data)) {
+    rawResults = obj.data as Array<Record<string, unknown>>;
+  } else if (Array.isArray(obj.response)) {
+    rawResults = obj.response as Array<Record<string, unknown>>;
+  } else if (Array.isArray(json)) {
+    rawResults = json as Array<Record<string, unknown>>;
+  }
+
+  if (!Array.isArray(rawResults) || rawResults.length === 0) {
     return [];
   }
 
   return rawResults.slice(0, 10).map((item, idx) => {
     // Only parse affinity score if provided by Qloo. NEVER invent fake random scores!
-    const rawScore = item.affinity ?? item.score;
+    const queryObj = item.query as Record<string, unknown> | undefined;
+    const props = item.properties as Record<string, unknown> | undefined;
+    const geocode = props?.geocode as Record<string, unknown> | undefined;
+    const loc = item.location as Record<string, unknown> | undefined;
+
+    const rawScore =
+      (typeof queryObj?.affinity === 'number' ? queryObj.affinity : undefined) ??
+      (typeof item.affinity === 'number' ? item.affinity : undefined) ??
+      (typeof item.score === 'number' ? item.score : undefined);
+
     let affinityScore: number | null = null;
     if (typeof rawScore === 'number' && !isNaN(rawScore)) {
       affinityScore = Math.round(rawScore <= 1.0 ? rawScore * 100 : Math.min(100, Math.max(0, rawScore)));
     }
 
+    const lat =
+      typeof loc?.lat === 'number'
+        ? loc.lat
+        : typeof geocode?.latitude === 'number'
+        ? geocode.latitude
+        : undefined;
+
+    const lng =
+      typeof loc?.lng === 'number'
+        ? loc.lng
+        : typeof geocode?.longitude === 'number'
+        ? geocode.longitude
+        : undefined;
+
+    const address =
+      (typeof loc?.address === 'string' ? loc.address : undefined) ||
+      (typeof props?.address === 'string' ? props.address : undefined) ||
+      (typeof item.disambiguation === 'string' ? item.disambiguation : undefined);
+
+    const neighborhood =
+      (typeof loc?.neighborhood === 'string' ? loc.neighborhood : undefined) ||
+      (typeof geocode?.name === 'string' ? geocode.name : undefined) ||
+      (typeof geocode?.city === 'string' ? geocode.city : undefined) ||
+      cityName;
+
+    const attributes: string[] = [];
+    if (Array.isArray(item.tags)) {
+      for (const t of item.tags) {
+        if (t && typeof (t as { name?: string }).name === 'string') {
+          attributes.push((t as { name: string }).name);
+        }
+      }
+    } else if (Array.isArray(item.attributes)) {
+      attributes.push(...(item.attributes as string[]).filter(Boolean));
+    }
+
+    const priceCandidate =
+      item.price_tier ||
+      item.price ||
+      props?.price_tier ||
+      props?.price_level;
+
+    let estimatedSpendTier: '$' | '$$' | '$$$' | 'Unknown' = 'Unknown';
+    if (priceCandidate === '$' || priceCandidate === 1 || priceCandidate === '1') estimatedSpendTier = '$';
+    else if (priceCandidate === '$$' || priceCandidate === 2 || priceCandidate === '2') estimatedSpendTier = '$$';
+    else if (priceCandidate === '$$$' || priceCandidate === 3 || priceCandidate === '3') estimatedSpendTier = '$$$';
+
+    const category =
+      (typeof item.subtype === 'string' ? item.subtype : undefined) ||
+      (typeof item.category === 'string' ? item.category : undefined) ||
+      (typeof item.type === 'string' ? item.type : undefined) ||
+      'Cultural Venue';
+
     return {
-      id: item.id || item.entity_id || `qloo-place-${idx}`,
-      name: item.name || item.title || `Cultural Place ${idx + 1}`,
-      category: item.category || item.type || 'Cultural Venue',
+      id: (item.entity_id as string) || (item.id as string) || `qloo-place-${idx}`,
+      name: (item.name as string) || (item.title as string) || `Cultural Place ${idx + 1}`,
+      category,
       affinityScore, // Truthful: number if returned, null if unprovided
       location: {
-        lat: typeof item.location?.lat === 'number' ? item.location.lat : undefined,
-        lng: typeof item.location?.lng === 'number' ? item.location.lng : undefined,
-        address: item.location?.address,
-        neighborhood: item.location?.neighborhood || cityName,
+        lat,
+        lng,
+        address,
+        neighborhood,
       },
-      attributes: Array.isArray(item.attributes) ? item.attributes : [],
-      estimatedSpendTier: (['$', '$$', '$$$'].includes(item.price_tier || item.price || '')
-        ? (item.price_tier || item.price)
-        : 'Unknown') as '$' | '$$' | '$$$' | 'Unknown',
+      attributes,
+      estimatedSpendTier,
       typicalDwellMinutes: 60,
       isSampleData: false,
       qlooSignalEvidence: {
         connectedAnchor: 'Qloo Cultural Graph',
-        sharedAffinities: Array.isArray(item.attributes) ? item.attributes : ['Cultural Category Affinity'],
+        sharedAffinities: attributes.length > 0 ? attributes.slice(0, 4) : ['Cultural Category Affinity'],
         affinityPercentile: affinityScore,
       },
     };
