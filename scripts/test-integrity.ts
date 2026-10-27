@@ -513,21 +513,82 @@ async function runTestSuite() {
   const parsedAllMissingInsights = parseQlooInsightsItems(mockAllMissingInsights, 'New York');
   assert(parsedAllMissingInsights.length === 0, 'Insights parser returns empty array when no candidates have real IDs');
 
-  // 4c2. Only Valid Qloo IDs Passed to Insights Request
+  // 4c2. Fail-Closed Entity ID Validation in fetchQlooPlaceInsights
   const savedInsightsFetch = globalThis.fetch;
   const savedInsightsKey = process.env.QLOO_API_KEY;
-  let insightsQueriedEntities: string[] = [];
   try {
-    process.env.QLOO_API_KEY = 'mock_key_for_insights_test';
+    process.env.QLOO_API_KEY = 'mock_key_for_insights_validation_test';
+    clearProbeCacheForTesting();
+
+    // 1. An empty ID array makes no live fetch and returns a clear error
+    let emptyFetchCalled = false;
+    globalThis.fetch = (async () => {
+      emptyFetchCalled = true;
+      return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+
+    let emptyThrew = false;
+    let emptyErrorMsg = '';
+    try {
+      await fetchQlooPlaceInsights({
+        entityIds: [],
+        lat: 40.7128,
+        lng: -74.006,
+        cityName: 'New York',
+        forceSampleMode: false,
+      });
+    } catch (err: unknown) {
+      emptyThrew = true;
+      emptyErrorMsg = err instanceof Error ? err.message : String(err);
+    }
+    assert(emptyThrew === true, 'Empty entityIds array throws an error in live mode');
+    assert(
+      emptyErrorMsg.includes('valid, non-empty Qloo entity ID is required'),
+      `Throws clear error message for empty entityIds (got: "${emptyErrorMsg}")`
+    );
+    assert(emptyFetchCalled === false, 'Empty entityIds array makes NO live network fetch to Qloo /v2/insights');
+
+    // 2. An array containing only empty or whitespace IDs makes no live fetch and returns a clear error
+    let whitespaceFetchCalled = false;
+    globalThis.fetch = (async () => {
+      whitespaceFetchCalled = true;
+      return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+
+    let whitespaceThrew = false;
+    let whitespaceErrorMsg = '';
+    try {
+      await fetchQlooPlaceInsights({
+        entityIds: ['', '   ', '\t', '\n'],
+        lat: 40.7128,
+        lng: -74.006,
+        cityName: 'New York',
+        forceSampleMode: false,
+      });
+    } catch (err: unknown) {
+      whitespaceThrew = true;
+      whitespaceErrorMsg = err instanceof Error ? err.message : String(err);
+    }
+    assert(whitespaceThrew === true, 'Whitespace/empty-only entityIds array throws an error in live mode');
+    assert(
+      whitespaceErrorMsg.includes('valid, non-empty Qloo entity ID is required'),
+      `Throws clear error message for whitespace/empty-only entityIds (got: "${whitespaceErrorMsg}")`
+    );
+    assert(whitespaceFetchCalled === false, 'Whitespace/empty entityIds array makes NO live network fetch to Qloo /v2/insights');
+
+    // 3. A mixed array sends only the valid, trimmed IDs to signal.interests.entities
+    let mixedQueriedEntities: string[] = [];
+    let mixedQueriedUrl = '';
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      mixedQueriedUrl = urlStr;
       const parsedUrl = new URL(urlStr);
-      insightsQueriedEntities = parsedUrl.searchParams.getAll('signal.interests.entities');
+      mixedQueriedEntities = parsedUrl.searchParams.getAll('signal.interests.entities');
       return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }) as typeof fetch;
 
     await fetchQlooPlaceInsights({
-      entityIds: ['valid_qloo_id_001', '', '   ', 'valid_qloo_id_002'],
+      entityIds: ['  valid_qloo_id_001  ', '', '   ', 'valid_qloo_id_002'],
       lat: 40.7128,
       lng: -74.006,
       cityName: 'New York',
@@ -535,15 +596,39 @@ async function runTestSuite() {
     });
 
     assert(
-      insightsQueriedEntities.length === 2 &&
-      insightsQueriedEntities[0] === 'valid_qloo_id_001' &&
-      insightsQueriedEntities[1] === 'valid_qloo_id_002',
-      'Only valid, non-empty Qloo IDs are passed in signal.interests.entities to /v2/insights'
+      mixedQueriedEntities.length === 2 &&
+      mixedQueriedEntities[0] === 'valid_qloo_id_001' &&
+      mixedQueriedEntities[1] === 'valid_qloo_id_002',
+      'Mixed entityIds sends only valid, trimmed IDs in signal.interests.entities to /v2/insights'
     );
     assert(
-      !insightsQueriedEntities.some(id => !id.trim() || id.startsWith('qloo-entity-')),
+      !mixedQueriedEntities.some(id => !id.trim() || id.startsWith('qloo-entity-')),
       'No blank, empty, or synthetic IDs reach /v2/insights query parameters'
     );
+    assert(
+      mixedQueriedUrl.includes('hackathon.api.qloo.com/v2/insights'),
+      'Requests are sent strictly to official /v2/insights endpoint'
+    );
+
+    // 4. Sample mode still works without making a live Qloo request
+    let sampleFetchCalled = false;
+    globalThis.fetch = (async () => {
+      sampleFetchCalled = true;
+      throw new Error('fetch should not be called in sample mode');
+    }) as typeof fetch;
+
+    const sampleResult = await fetchQlooPlaceInsights({
+      entityIds: [], // Even with empty entityIds, sample mode succeeds safely
+      lat: 40.7128,
+      lng: -74.006,
+      cityName: 'New York',
+      forceSampleMode: true,
+    });
+
+    assert(sampleFetchCalled === false, 'Sample mode makes ZERO live network fetch calls');
+    assert(sampleResult.isSampleData === true, 'Sample mode truthfully reports isSampleData: true');
+    assert(sampleResult.candidates.length > 0, 'Sample mode returns curated candidates from offline fixtures');
+
   } finally {
     globalThis.fetch = savedInsightsFetch;
     if (savedInsightsKey !== undefined) {
@@ -551,6 +636,7 @@ async function runTestSuite() {
     } else {
       delete process.env.QLOO_API_KEY;
     }
+    clearProbeCacheForTesting();
   }
 
   // 4d. Unscored place item truthfully produces affinityScore: null (ZERO fabricated scores)

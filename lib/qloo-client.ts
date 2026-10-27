@@ -323,7 +323,20 @@ export async function fetchQlooPlaceInsights(params: {
     };
   }
 
-  const cacheKey = `insights:${cityName}:${lat.toFixed(2)},${lng.toFixed(2)}:${entityIds.sort().join(',')}`;
+  // Fail-closed validation: Require at least one valid, non-empty entity ID before live Qloo request
+  const validEntityIds = Array.isArray(entityIds)
+    ? entityIds
+        .map(id => (typeof id === 'string' ? id.trim() : ''))
+        .filter(id => id.length > 0)
+    : [];
+
+  if (validEntityIds.length === 0) {
+    throw new Error(
+      'At least one valid, non-empty Qloo entity ID is required to fetch live place insights.'
+    );
+  }
+
+  const cacheKey = `insights:${cityName}:${lat.toFixed(2)},${lng.toFixed(2)}:${validEntityIds.slice().sort().join(',')}`;
   const cached = getCached<QlooRawPlaceCandidate[]>(cacheKey);
   if (cached) {
     return { candidates: cached, isSampleData: false };
@@ -337,12 +350,9 @@ export async function fetchQlooPlaceInsights(params: {
   url.searchParams.set('filter.location', `POINT(${lng} ${lat})`);
   url.searchParams.set('filter.location.radius', '20000'); // 20 km radius
   
-  // Add signal.interests.entities for each valid, non-empty resolved entity
-  for (const id of entityIds) {
-    const cleanId = typeof id === 'string' ? id.trim() : '';
-    if (cleanId) {
-      url.searchParams.append('signal.interests.entities', cleanId);
-    }
+  // Add signal.interests.entities for each validated, trimmed entity ID
+  for (const id of validEntityIds) {
+    url.searchParams.append('signal.interests.entities', id);
   }
 
   const controller = new AbortController();
