@@ -26,6 +26,8 @@ import {
 } from '../lib/session-token';
 import { OutingRequest } from '../lib/types';
 import { NextRequest } from 'next/server';
+import * as fs from 'fs';
+import * as path from 'path';
 
 console.log('================================================================');
 console.log('  TasteTrail Production Code Integrity Suite (Direct Imports)   ');
@@ -302,23 +304,110 @@ async function runTestSuite() {
   // --------------------------------------------------------------------------
   console.log('\n--- Suite 4: Qloo Client, Security & Parsers (lib/qloo-client.ts) ---');
 
-  // 4a. QLOO_BASE_URL Host Allowlist Security
+  // 4a. QLOO_BASE_URL HTTPS and Host Allowlist Security
   const defaultBaseUrl = getValidatedQlooBaseUrl();
   assert(defaultBaseUrl === 'https://hackathon.api.qloo.com', 'Default Qloo base URL is official hackathon endpoint');
 
-  process.env.QLOO_BASE_URL = 'https://untrusted-exfiltration.example.com/api';
-  const blockedBaseUrl = getValidatedQlooBaseUrl();
+  // Strict HTTPS requirement: reject http:
+  process.env.QLOO_BASE_URL = 'http://hackathon.api.qloo.com';
+  const httpRejectedUrl = getValidatedQlooBaseUrl();
   assert(
-    blockedBaseUrl === 'https://hackathon.api.qloo.com',
-    'Rejects untrusted QLOO_BASE_URL domain and safely enforces https://hackathon.api.qloo.com'
+    httpRejectedUrl === 'https://hackathon.api.qloo.com',
+    'Rejects insecure http://hackathon.api.qloo.com and safely enforces https://hackathon.api.qloo.com'
   );
 
+  // Reject unexpected ports
+  process.env.QLOO_BASE_URL = 'https://hackathon.api.qloo.com:8443';
+  assert(getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com', 'Rejects unexpected port :8443 on official host');
+  process.env.QLOO_BASE_URL = 'https://hackathon.api.qloo.com:80';
+  assert(getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com', 'Rejects port :80 on official host');
+  process.env.QLOO_BASE_URL = 'https://hackathon.api.qloo.com:443';
+  assert(getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com', 'Accepts standard HTTPS port :443');
+
+  // Reject embedded credentials
+  process.env.QLOO_BASE_URL = 'https://user:password@hackathon.api.qloo.com';
+  assert(getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com', 'Rejects credentials embedded in URL');
+
+  // Reject paths other than root
+  process.env.QLOO_BASE_URL = 'https://hackathon.api.qloo.com/v2/insights';
+  assert(getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com', 'Rejects path /v2/insights in QLOO_BASE_URL');
+  process.env.QLOO_BASE_URL = 'https://hackathon.api.qloo.com/';
+  assert(getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com', 'Accepts trailing slash root path');
+
+  // Reject query strings
+  process.env.QLOO_BASE_URL = 'https://hackathon.api.qloo.com?leak=true';
+  assert(getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com', 'Rejects query string in QLOO_BASE_URL');
+
+  // Reject fragments
+  process.env.QLOO_BASE_URL = 'https://hackathon.api.qloo.com#fragment';
+  assert(getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com', 'Rejects hash fragment in QLOO_BASE_URL');
+
+  // Reject malformed URL
+  process.env.QLOO_BASE_URL = 'not-a-valid-url';
+  assert(getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com', 'Rejects malformed URL string');
+
+  // Reject untrusted hosts
+  process.env.QLOO_BASE_URL = 'https://untrusted-exfiltration.example.com/api';
+  assert(
+    getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com',
+    'Rejects untrusted QLOO_BASE_URL domain and safely enforces https://hackathon.api.qloo.com'
+  );
+  process.env.QLOO_BASE_URL = 'https://hackathon.api.qloo.com.attacker.com';
+  assert(
+    getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com',
+    'Rejects subdomain spoofing attack (attacker.com suffix)'
+  );
+
+  // Accept official production host
   process.env.QLOO_BASE_URL = 'https://api.qloo.com';
-  const allowedProdUrl = getValidatedQlooBaseUrl();
-  assert(allowedProdUrl === 'https://api.qloo.com', 'Allows official production host api.qloo.com');
+  assert(getValidatedQlooBaseUrl() === 'https://api.qloo.com', 'Allows official production host api.qloo.com');
+
+  // Accept official hackathon host
+  process.env.QLOO_BASE_URL = 'https://hackathon.api.qloo.com';
+  assert(getValidatedQlooBaseUrl() === 'https://hackathon.api.qloo.com', 'Allows official hackathon host hackathon.api.qloo.com');
   delete process.env.QLOO_BASE_URL;
 
-  // 4b. Pure Response Parsing: Official Qloo /search Response Schema
+  // 4a2. Untrusted Host Never Receives API Key
+  const savedTestKey = process.env.QLOO_API_KEY;
+  const savedOrigFetch = globalThis.fetch;
+  const interceptedUrls: string[] = [];
+  const interceptedHeaders: Headers[] = [];
+  try {
+    process.env.QLOO_BASE_URL = 'https://malicious-exfiltration.example.com';
+    process.env.QLOO_API_KEY = 'sensitive_qloo_secret_key_12345';
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      interceptedUrls.push(urlStr);
+      interceptedHeaders.push(new Headers(init?.headers));
+      return new Response(JSON.stringify({ entities: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+
+    await searchQlooEntities('Miles Davis', 'urn:entity:artist', false);
+
+    assert(
+      !interceptedUrls.some(u => u.includes('malicious-exfiltration.example.com')),
+      'Untrusted host in QLOO_BASE_URL was never called by HTTP client'
+    );
+    assert(
+      interceptedUrls.every(u => u.startsWith('https://hackathon.api.qloo.com')),
+      'All live requests strictly sent to official https://hackathon.api.qloo.com'
+    );
+    assert(
+      interceptedHeaders.some(h => h.get('X-Api-Key') === 'sensitive_qloo_secret_key_12345'),
+      'API key was delivered securely to official endpoint'
+    );
+  } finally {
+    globalThis.fetch = savedOrigFetch;
+    if (savedTestKey !== undefined) {
+      process.env.QLOO_API_KEY = savedTestKey;
+    } else {
+      delete process.env.QLOO_API_KEY;
+    }
+    delete process.env.QLOO_BASE_URL;
+    clearProbeCacheForTesting();
+  }
+
+  // 4b. Pure Response Parsing & Never Invent Entity IDs
   const mockQlooSearchResponse = {
     response: {
       entities: [
@@ -337,6 +426,36 @@ async function runTestSuite() {
   assert(parsedSearch[0].id === 'ent_miles_davis_live', 'Maps entity id accurately from /search');
   assert(parsedSearch[0].name === 'Miles Davis', 'Maps entity name accurately from /search');
   assert(parsedSearch[0].score === 98, 'Maps entity score accurately from /search');
+
+  // Search responses with missing or blank entity IDs produce no usable candidates
+  const mockMissingIdSearch = {
+    response: {
+      entities: [
+        { name: 'Entity With No ID', type: 'urn:entity:artist' },
+        { id: '', name: 'Entity With Empty ID', type: 'urn:entity:artist' },
+        { id: '   ', name: 'Entity With Whitespace ID', type: 'urn:entity:artist' },
+        { id: null, name: 'Entity With Null ID', type: 'urn:entity:artist' },
+        { id: undefined, name: 'Entity With Undefined ID', type: 'urn:entity:artist' },
+        { entity_id: 'real_entity_id_456', name: 'Entity With Real ID', type: 'urn:entity:artist' },
+      ],
+    },
+  };
+  const parsedSearchWithMissing = parseQlooSearchItems(mockMissingIdSearch, 'Query', 'urn:entity:artist');
+  assert(parsedSearchWithMissing.length === 1, 'Search parser discards all items with missing, blank, or null IDs');
+  assert(parsedSearchWithMissing[0].id === 'real_entity_id_456', 'Only the genuine entity ID is retained');
+  assert(
+    !parsedSearchWithMissing.some(c => c.id.startsWith('qloo-entity-')),
+    'ZERO invented/fallback placeholder IDs (e.g. qloo-entity-*) in search parser'
+  );
+
+  const mockAllMissingSearch = {
+    entities: [
+      { name: 'Missing 1' },
+      { id: '', name: 'Missing 2' },
+    ],
+  };
+  const parsedAllMissing = parseQlooSearchItems(mockAllMissingSearch, 'Query');
+  assert(parsedAllMissing.length === 0, 'Search parser returns empty array when no candidates have real IDs');
 
   // 4c. Pure Response Parsing: Official Qloo /v2/insights Response Schema
   const mockQlooInsightsResponse = {
@@ -366,6 +485,73 @@ async function runTestSuite() {
   assert(parsedInsights[0].location?.lat === 40.7308, 'Extracts verified latitude coordinate');
   assert(parsedInsights[0].location?.lng === -74.0007, 'Extracts verified longitude coordinate');
   assert(parsedInsights[0].estimatedSpendTier === '$$', 'Extracts verified spend tier');
+
+  // Insights parser with missing or blank entity IDs
+  const mockMissingIdInsights = {
+    results: [
+      { name: 'Place With No ID', affinity: 0.8 },
+      { id: '', name: 'Place With Empty ID' },
+      { id: '   ', name: 'Place With Whitespace ID' },
+      { id: null, name: 'Place With Null ID' },
+      { entity_id: 'real_place_id_789', name: 'Real Place', affinity: 0.85 },
+    ],
+  };
+  const parsedInsightsWithMissing = parseQlooInsightsItems(mockMissingIdInsights, 'New York');
+  assert(parsedInsightsWithMissing.length === 1, 'Insights parser discards all items with missing, blank, or null IDs');
+  assert(parsedInsightsWithMissing[0].id === 'real_place_id_789', 'Only the genuine place ID is retained');
+  assert(
+    !parsedInsightsWithMissing.some(p => p.id.startsWith('qloo-place-')),
+    'ZERO invented/fallback placeholder IDs (e.g. qloo-place-*) in insights parser'
+  );
+
+  const mockAllMissingInsights = {
+    results: [
+      { name: 'No ID 1' },
+      { entity_id: '', name: 'No ID 2' },
+    ],
+  };
+  const parsedAllMissingInsights = parseQlooInsightsItems(mockAllMissingInsights, 'New York');
+  assert(parsedAllMissingInsights.length === 0, 'Insights parser returns empty array when no candidates have real IDs');
+
+  // 4c2. Only Valid Qloo IDs Passed to Insights Request
+  const savedInsightsFetch = globalThis.fetch;
+  const savedInsightsKey = process.env.QLOO_API_KEY;
+  let insightsQueriedEntities: string[] = [];
+  try {
+    process.env.QLOO_API_KEY = 'mock_key_for_insights_test';
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const parsedUrl = new URL(urlStr);
+      insightsQueriedEntities = parsedUrl.searchParams.getAll('signal.interests.entities');
+      return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+
+    await fetchQlooPlaceInsights({
+      entityIds: ['valid_qloo_id_001', '', '   ', 'valid_qloo_id_002'],
+      lat: 40.7128,
+      lng: -74.006,
+      cityName: 'New York',
+      forceSampleMode: false,
+    });
+
+    assert(
+      insightsQueriedEntities.length === 2 &&
+      insightsQueriedEntities[0] === 'valid_qloo_id_001' &&
+      insightsQueriedEntities[1] === 'valid_qloo_id_002',
+      'Only valid, non-empty Qloo IDs are passed in signal.interests.entities to /v2/insights'
+    );
+    assert(
+      !insightsQueriedEntities.some(id => !id.trim() || id.startsWith('qloo-entity-')),
+      'No blank, empty, or synthetic IDs reach /v2/insights query parameters'
+    );
+  } finally {
+    globalThis.fetch = savedInsightsFetch;
+    if (savedInsightsKey !== undefined) {
+      process.env.QLOO_API_KEY = savedInsightsKey;
+    } else {
+      delete process.env.QLOO_API_KEY;
+    }
+  }
 
   // 4d. Unscored place item truthfully produces affinityScore: null (ZERO fabricated scores)
   const mockUnscoredResponse = {
@@ -604,8 +790,176 @@ async function runTestSuite() {
   }
   assert(anchorError === true, 'Rejects empty cultural anchor list');
 
-  // 6c. Zero synthetic ID in live mode when anchors cannot resolve
-  // (In sample mode, curated catalog matches, but unresolvable anchor triggers error when 0 resolve)
+  // 6c. Missing-ID responses cannot produce a successful live itinerary disguised as real Qloo data
+  const savedAgentFetch = globalThis.fetch;
+  const savedAgentKey = process.env.QLOO_API_KEY;
+  try {
+    process.env.QLOO_API_KEY = 'mock_key_for_agent_test';
+
+    // Case 1: Search returns candidates with missing IDs -> Stage 2 halts with clarification error
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (urlStr.includes('/search')) {
+        return new Response(
+          JSON.stringify({
+            response: {
+              entities: [
+                { name: 'Miles Davis', type: 'urn:entity:artist' }, // missing id and entity_id!
+              ],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+
+    let searchMissingThrew = false;
+    let searchClarificationMsg = '';
+    try {
+      await runTasteTrailAgent({
+        ...mockRequest,
+        forceSampleMode: false,
+      });
+    } catch (err: unknown) {
+      searchMissingThrew = true;
+      searchClarificationMsg = err instanceof Error ? err.message : String(err);
+    }
+
+    assert(
+      searchMissingThrew === true,
+      'Live agent workflow strictly halts when Qloo search returns missing entity IDs'
+    );
+    assert(
+      searchClarificationMsg.includes('Cultural Anchor Clarification Needed'),
+      `Halts with clarification notice when entities have no genuine ID (got: "${searchClarificationMsg.slice(0, 45)}...")`
+    );
+
+    // Case 2: Insights returns candidates with missing IDs -> Stage 3 halts and refuses to fabricate data
+    clearProbeCacheForTesting();
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (urlStr.includes('/search')) {
+        return new Response(
+          JSON.stringify({
+            response: {
+              entities: [
+                { id: 'ent_genuine_123', name: 'Miles Davis', type: 'urn:entity:artist' },
+              ],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (urlStr.includes('/v2/insights')) {
+        return new Response(
+          JSON.stringify({
+            response: {
+              results: [
+                { name: 'Place Without ID', affinity: 0.9 }, // missing id and entity_id!
+              ],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+
+    let insightsMissingThrew = false;
+    let insightsMsg = '';
+    try {
+      await runTasteTrailAgent({
+        ...mockRequest,
+        forceSampleMode: false,
+      });
+    } catch (err: unknown) {
+      insightsMissingThrew = true;
+      insightsMsg = err instanceof Error ? err.message : String(err);
+    }
+
+    assert(
+      insightsMissingThrew === true,
+      'Live agent workflow strictly halts when Qloo insights returns places with missing IDs'
+    );
+    assert(
+      insightsMsg.includes('Qloo Cultural Intelligence returned no matching venues'),
+      `Truthfully informs user when no verified places remain after discarding missing-ID candidates (got: "${insightsMsg.slice(0, 45)}...")`
+    );
+
+  } finally {
+    globalThis.fetch = savedAgentFetch;
+    if (savedAgentKey !== undefined) {
+      process.env.QLOO_API_KEY = savedAgentKey;
+    } else {
+      delete process.env.QLOO_API_KEY;
+    }
+    clearProbeCacheForTesting();
+  }
+
+  // --------------------------------------------------------------------------
+  // 7. README Documentation Integrity & Privacy Auditing
+  // --------------------------------------------------------------------------
+  console.log('\n--- Suite 7: Documentation Integrity & Privacy Auditing (README.md) ---');
+
+  const readmePath = path.resolve(__dirname, '../README.md');
+  const readmeContent = fs.readFileSync(readmePath, 'utf-8');
+
+  // Verify tt_session cookie documentation
+  assert(readmeContent.includes('tt_session'), 'README explicitly documents the tt_session cookie');
+  assert(
+    readmeContent.includes('anonymous') &&
+    (readmeContent.includes('HTTP-only') || readmeContent.includes('HttpOnly')) &&
+    readmeContent.includes('signed session cookie'),
+    'README accurately describes tt_session as an anonymous, HTTP-only, signed session cookie'
+  );
+  assert(
+    readmeContent.includes('rate limiting'),
+    'README documents that tt_session is used for rate limiting'
+  );
+  assert(
+    !readmeContent.includes('no tracking cookies'),
+    'README eliminates inaccurate "no tracking cookies" claim'
+  );
+  assert(
+    readmeContent.includes("stored solely in the user's browser") ||
+    readmeContent.includes("stored only in the user's browser") ||
+    readmeContent.includes("browser storage"),
+    'README accurately documents cookie is stored only in the browser'
+  );
+  assert(
+    readmeContent.includes('database') && readmeContent.includes('disk') &&
+    (readmeContent.includes('**not** persist') || readmeContent.includes('not persist') || readmeContent.includes('does not persist') || readmeContent.includes('No session information is persisted')),
+    'README documents that no session records or user profiles are persisted server-side in any database or disk'
+  );
+
+  // Verify honest accessibility & operational limits
+  assert(
+    readmeContent.includes('Physical accessibility') || readmeContent.includes('physical accessibility'),
+    'README documents physical accessibility constraints'
+  );
+  assert(
+    readmeContent.includes('live opening hours') || readmeContent.includes('opening hours'),
+    'README documents live opening hours limitations'
+  );
+  assert(
+    readmeContent.includes('real-time') && (readmeContent.includes('prices') || readmeContent.includes('ticket prices')),
+    'README documents real-time price limitations'
+  );
+  assert(
+    readmeContent.includes('not verified by Qloo') || readmeContent.includes('unverified by Qloo'),
+    'README honestly states physical operations and hours are not verified by Qloo'
+  );
+
+  // Verify clone & setup instructions
+  assert(
+    readmeContent.includes('git clone https://github.com/venkatkrish98/tastetrail.git'),
+    'README clone URL matches this repository (venkatkrish98/tastetrail)'
+  );
+  assert(
+    !readmeContent.includes('hack_d427972f94fd3425cb215cb71e8d008a97b2382a'),
+    'README never exposes any real API keys or hackathon credentials'
+  );
 
   // --------------------------------------------------------------------------
   // Summary

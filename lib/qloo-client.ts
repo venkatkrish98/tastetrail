@@ -21,24 +21,83 @@ const OFFICIAL_QLOO_HOSTS = new Set([
 
 /**
  * Validates and sanitizes QLOO_BASE_URL against an allowlist of official Qloo hosts.
- * Prevents credential leakage (X-Api-Key) to arbitrary external URLs.
+ * - Strictly requires HTTPS protocol. Rejects HTTP, credentials, non-standard ports,
+ *   paths, query strings, fragments, and untrusted hosts.
+ * - Prevents credential leakage (X-Api-Key) to arbitrary or insecure external endpoints.
+ * - Safely defaults to https://hackathon.api.qloo.com on any invalid value.
+ * - Never includes API keys or secrets in logs or warning messages.
  */
 export function getValidatedQlooBaseUrl(): string {
-  const envUrl = process.env.QLOO_BASE_URL;
+  const envUrl = process.env.QLOO_BASE_URL?.trim();
   if (!envUrl) {
     return 'https://hackathon.api.qloo.com';
   }
 
   try {
     const parsed = new URL(envUrl);
-    if (!OFFICIAL_QLOO_HOSTS.has(parsed.hostname.toLowerCase())) {
+
+    // 1. Strictly require HTTPS
+    if (parsed.protocol !== 'https:') {
+      console.warn(
+        `[Security Warning] Insecure protocol "${parsed.protocol}" in QLOO_BASE_URL. Only https: is permitted. Enforcing official endpoint https://hackathon.api.qloo.com.`
+      );
+      return 'https://hackathon.api.qloo.com';
+    }
+
+    // 2. Hostname must match official Qloo hosts exactly
+    const hostname = parsed.hostname.toLowerCase();
+    if (!OFFICIAL_QLOO_HOSTS.has(hostname)) {
       console.warn(
         `[Security Warning] Untrusted QLOO_BASE_URL hostname "${parsed.hostname}". Refusing to transmit X-Api-Key. Enforcing official endpoint https://hackathon.api.qloo.com.`
       );
       return 'https://hackathon.api.qloo.com';
     }
-    return `${parsed.protocol}//${parsed.host}`;
+
+    // 3. Reject unexpected ports
+    if (parsed.port !== '' && parsed.port !== '443') {
+      console.warn(
+        `[Security Warning] Unexpected port "${parsed.port}" in QLOO_BASE_URL. Enforcing official endpoint https://hackathon.api.qloo.com.`
+      );
+      return 'https://hackathon.api.qloo.com';
+    }
+
+    // 4. Reject credentials (username/password)
+    if (parsed.username || parsed.password) {
+      console.warn(
+        '[Security Warning] Embedded credentials in QLOO_BASE_URL are rejected. Enforcing official endpoint https://hackathon.api.qloo.com.'
+      );
+      return 'https://hackathon.api.qloo.com';
+    }
+
+    // 5. Reject paths other than empty or root '/'
+    if (parsed.pathname !== '' && parsed.pathname !== '/') {
+      console.warn(
+        `[Security Warning] Unexpected path "${parsed.pathname}" in QLOO_BASE_URL. Enforcing official endpoint https://hackathon.api.qloo.com.`
+      );
+      return 'https://hackathon.api.qloo.com';
+    }
+
+    // 6. Reject query strings
+    if (parsed.search !== '') {
+      console.warn(
+        '[Security Warning] Query parameters in QLOO_BASE_URL are rejected. Enforcing official endpoint https://hackathon.api.qloo.com.'
+      );
+      return 'https://hackathon.api.qloo.com';
+    }
+
+    // 7. Reject fragments / hashes
+    if (parsed.hash !== '') {
+      console.warn(
+        '[Security Warning] Hash fragments in QLOO_BASE_URL are rejected. Enforcing official endpoint https://hackathon.api.qloo.com.'
+      );
+      return 'https://hackathon.api.qloo.com';
+    }
+
+    return `https://${hostname}`;
   } catch {
+    console.warn(
+      '[Security Warning] Malformed QLOO_BASE_URL. Enforcing official endpoint https://hackathon.api.qloo.com.'
+    );
     return 'https://hackathon.api.qloo.com';
   }
 }
@@ -83,7 +142,9 @@ export function isLiveQlooConfigured(): boolean {
 }
 
 /**
- * Pure parser for Qloo /search response conforming to official guide schemas
+ * Pure parser for Qloo /search response conforming to official guide schemas.
+ * STRICT INTEGRITY: Only returns candidates containing a real, non-empty ID supplied by Qloo.
+ * Candidates without a real ID are discarded and never given fallback or placeholder IDs.
  */
 export function parseQlooSearchItems(
   json: unknown,
@@ -104,50 +165,59 @@ export function parseQlooSearchItems(
     popularity?: number;
   }> = [];
 
-  if (!obj || typeof obj !== 'object') {
-    return Array.isArray(json)
-      ? (json as Array<{ id?: string; entity_id?: string; name?: string; title?: string; type?: string; entity_type?: string; category?: string; description?: string; score?: number }>)
-          .slice(0, 5)
-          .map((item, idx) => ({
-            id: item.id || item.entity_id || `qloo-entity-${idx}`,
-            name: item.name || item.title || query,
-            type: item.type || item.entity_type || item.category || entityType || 'urn:entity',
-            description: item.description,
-            score: typeof item.score === 'number' ? item.score : null,
-          }))
-      : [];
-  }
+  if (obj && typeof obj === 'object') {
+    const resObj = obj.response as Record<string, unknown> | undefined;
+    const resultsObj = obj.results as Record<string, unknown> | undefined;
 
-  const resObj = obj.response as Record<string, unknown> | undefined;
-  const resultsObj = obj.results as Record<string, unknown> | undefined;
-
-  if (Array.isArray(obj.entities)) {
-    rawItems = obj.entities;
-  } else if (resObj && Array.isArray(resObj.entities)) {
-    rawItems = resObj.entities as [];
-  } else if (Array.isArray(obj.results)) {
-    rawItems = obj.results;
-  } else if (resultsObj && Array.isArray(resultsObj.entities)) {
-    rawItems = resultsObj.entities as [];
-  } else if (Array.isArray(obj.data)) {
-    rawItems = obj.data;
-  } else if (Array.isArray(obj.response)) {
-    rawItems = obj.response;
+    if (Array.isArray(obj.entities)) {
+      rawItems = obj.entities;
+    } else if (resObj && Array.isArray(resObj.entities)) {
+      rawItems = resObj.entities as [];
+    } else if (Array.isArray(obj.results)) {
+      rawItems = obj.results;
+    } else if (resultsObj && Array.isArray(resultsObj.entities)) {
+      rawItems = resultsObj.entities as [];
+    } else if (Array.isArray(obj.data)) {
+      rawItems = obj.data;
+    } else if (Array.isArray(obj.response)) {
+      rawItems = obj.response;
+    }
   } else if (Array.isArray(json)) {
     rawItems = json;
   }
 
-  if (!Array.isArray(rawItems)) {
+  if (!Array.isArray(rawItems) || rawItems.length === 0) {
     return [];
   }
 
-  return rawItems.slice(0, 5).map((item, idx) => ({
-    id: item.id || item.entity_id || `qloo-entity-${idx}`,
-    name: item.name || item.title || query,
-    type: item.type || item.entity_type || item.category || entityType || 'urn:entity',
-    description: item.description,
-    score: typeof item.score === 'number' ? item.score : null,
-  }));
+  const candidates: DisambiguationCandidate[] = [];
+  for (const item of rawItems) {
+    if (!item || typeof item !== 'object') continue;
+
+    // STRICT INTEGRITY: Only accept real, non-empty IDs from Qloo.
+    // Discard any candidate without a real ID. NEVER invent placeholder IDs!
+    const rawId = (typeof item.id === 'string' && item.id.trim()) ||
+                  (typeof item.entity_id === 'string' && item.entity_id.trim());
+    if (!rawId) {
+      continue;
+    }
+
+    const name = (typeof item.name === 'string' && item.name.trim()) ||
+                 (typeof item.title === 'string' && item.title.trim()) ||
+                 query;
+
+    candidates.push({
+      id: rawId,
+      name,
+      type: item.type || item.entity_type || item.category || entityType || 'urn:entity',
+      description: item.description,
+      score: typeof item.score === 'number' ? item.score : null,
+    });
+
+    if (candidates.length >= 5) break;
+  }
+
+  return candidates;
 }
 
 /**
@@ -267,9 +337,12 @@ export async function fetchQlooPlaceInsights(params: {
   url.searchParams.set('filter.location', `POINT(${lng} ${lat})`);
   url.searchParams.set('filter.location.radius', '20000'); // 20 km radius
   
-  // Add signal.interests.entities for each resolved entity
+  // Add signal.interests.entities for each valid, non-empty resolved entity
   for (const id of entityIds) {
-    url.searchParams.append('signal.interests.entities', id);
+    const cleanId = typeof id === 'string' ? id.trim() : '';
+    if (cleanId) {
+      url.searchParams.append('signal.interests.entities', cleanId);
+    }
   }
 
   const controller = new AbortController();
@@ -356,7 +429,19 @@ export function parseQlooInsightsItems(
     return [];
   }
 
-  return rawResults.slice(0, 10).map((item, idx) => {
+  const places: QlooRawPlaceCandidate[] = [];
+
+  for (const item of rawResults) {
+    if (!item || typeof item !== 'object') continue;
+
+    // STRICT INTEGRITY: Only accept real, non-empty IDs from Qloo.
+    // Discard any candidate without a real ID. NEVER invent placeholder IDs!
+    const rawId = (typeof item.entity_id === 'string' && item.entity_id.trim()) ||
+                  (typeof item.id === 'string' && item.id.trim());
+    if (!rawId) {
+      continue;
+    }
+
     // Only parse affinity score if provided by Qloo. NEVER invent fake random scores!
     const queryObj = item.query as Record<string, unknown> | undefined;
     const props = item.properties as Record<string, unknown> | undefined;
@@ -426,9 +511,14 @@ export function parseQlooInsightsItems(
       (typeof item.type === 'string' ? item.type : undefined) ||
       'Cultural Venue';
 
-    return {
-      id: (item.entity_id as string) || (item.id as string) || `qloo-place-${idx}`,
-      name: (item.name as string) || (item.title as string) || `Cultural Place ${idx + 1}`,
+    const name =
+      (typeof item.name === 'string' && item.name.trim()) ||
+      (typeof item.title === 'string' && item.title.trim()) ||
+      'Cultural Place';
+
+    places.push({
+      id: rawId,
+      name,
       category,
       affinityScore, // Truthful: number if returned, null if unprovided
       location: {
@@ -446,8 +536,12 @@ export function parseQlooInsightsItems(
         sharedAffinities: attributes.length > 0 ? attributes.slice(0, 4) : ['Cultural Category Affinity'],
         affinityPercentile: affinityScore,
       },
-    };
-  });
+    });
+
+    if (places.length >= 10) break;
+  }
+
+  return places;
 }
 
 /**
@@ -585,4 +679,5 @@ export async function verifyLiveQlooConnectivity(forceFresh = false): Promise<{
 export function clearProbeCacheForTesting(): void {
   cachedProbeResult = null;
   inFlightProbePromise = null;
+  cache.clear();
 }

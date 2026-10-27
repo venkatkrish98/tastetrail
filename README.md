@@ -87,7 +87,9 @@ When visiting or exploring a city with limited time (2 to 5 hours), travelers an
 - **Rate Limiting & Scope Notice:** Max 20 requests/minute per client. Request body size bounded to 32KB (HTTP 413 Payload Too Large). Strict geographic coordinate bounds checking.
   - *Per-Instance Scope:* In-memory sliding window rate limits and singleflight Qloo probe caching operate per serverless instance / process on Vercel. They provide protection per instance, but are not globally synchronized across multiple independent serverless isolates unless backed by a shared external store (e.g., Upstash Redis).
 - **Aggregate Cultural Affinities:** Qloo recommendations are presented as collective cultural affinities across creative communities, **never as proof of an individual's personal identity, private preferences, or predictive surveillance.**
-- **No Personal Data Collected:** TasteTrail requires no user login, no tracking cookies, and stores zero personal identifiers.
+- **Session Cookie & Client Privacy:** TasteTrail uses an anonymous, HTTP-only, cryptographically HMAC-signed session cookie (`tt_session`) exclusively for request rate limiting and client bucket isolation in untrusted proxy environments.
+  - *Storage & Persistence:* The `tt_session` cookie is stored solely in the user's browser storage. TasteTrail does **not** persist any session records, user accounts, or personal identifiers in any server-side database or disk storage. On the server, only volatile in-memory sliding-window request timestamps (within a 60-second window) are kept in process memory for rate-limiting calculation and are pruned periodically.
+  - *No Tracking or Profiling:* The cookie contains only a random UUID and its HMAC signature; it is never used for behavioral profiling, advertising, or cross-site tracking.
 - **Truthful Operational Boundaries:** Qloo maps cultural taste affinities, not physical venue operations. Physical accessibility (wheelchair ramps), live opening hours, and real-time ticket prices are explicitly marked as unverified by Qloo and require direct venue confirmation.
 - **Content Security Policy:** Strict CSP headers configured in `next.config.js` with `'unsafe-eval'` removed.
 
@@ -121,12 +123,18 @@ Copy `.env.example` to `.env.local`:
 ```bash
 cp .env.example .env.local
 ```
-Edit `.env.local` to provide your official Qloo Hackathon API key:
+Edit `.env.local` to provide your configuration:
 ```env
-QLOO_API_KEY=your_official_hackathon_key_here
+# Base URL for Qloo Hackathon endpoint (must be https://hackathon.api.qloo.com or https://api.qloo.com)
 QLOO_BASE_URL=https://hackathon.api.qloo.com
+
+# Optional: Add your official Qloo API key to activate live mode
+QLOO_API_KEY=your_official_hackathon_key_here
+
+# Mandatory in production: Private 32+ character random secret for HMAC session signing (e.g. openssl rand -hex 32)
+SESSION_SECRET=your_32_byte_random_secret_here
 ```
-*(Note: If you do not have an API key yet, you can leave it blank! TasteTrail will automatically run in the transparent **Sample Data Demo Mode** with full functionality).*
+*(Note: If `QLOO_API_KEY` is omitted, TasteTrail automatically runs in transparent **Sample Data Demo Mode** with labeled fixtures so judges can test immediately without credentials).*
 
 ### 5. Run the development server
 ```bash
