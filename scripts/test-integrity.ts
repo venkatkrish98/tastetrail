@@ -170,6 +170,68 @@ async function runTestSuite() {
     'Strictly rejects cookies signed with external/unauthorized secret keys'
   );
 
+  // 2b. Production Secret Hardening: Reject missing, weak, or known placeholder secrets
+  const savedNodeEnv = process.env.NODE_ENV;
+  const savedSessionSecret = process.env.SESSION_SECRET;
+
+  try {
+    // @ts-expect-error mutating NODE_ENV for test
+    process.env.NODE_ENV = 'production';
+
+    // Test: Missing secret in production throws
+    delete process.env.SESSION_SECRET;
+    resetEphemeralSecretForTesting();
+    let threwMissing = false;
+    try {
+      getSessionSecret();
+    } catch (e: unknown) {
+      threwMissing = e instanceof Error && e.message.includes('SESSION_SECRET is not configured in production');
+    }
+    assert(threwMissing, 'Production mode strictly rejects missing SESSION_SECRET');
+
+    // Test: Placeholder secret in production throws
+    process.env.SESSION_SECRET = 'your_cryptographically_secure_random_hmac_secret_here';
+    let threwPlaceholder = false;
+    try {
+      getSessionSecret();
+    } catch (e: unknown) {
+      threwPlaceholder = e instanceof Error && e.message.includes('known placeholder value');
+    }
+    assert(threwPlaceholder, 'Production mode strictly rejects known placeholder SESSION_SECRET');
+
+    // Test: Weak secret (< 32 chars) in production throws
+    process.env.SESSION_SECRET = 'short_secret_only_24_chars';
+    let threwWeak = false;
+    try {
+      getSessionSecret();
+    } catch (e: unknown) {
+      threwWeak = e instanceof Error && e.message.includes('too weak');
+    }
+    assert(threwWeak, 'Production mode strictly rejects weak SESSION_SECRET (< 32 characters)');
+
+    // Test: Valid high-entropy secret (>= 32 chars) in production succeeds
+    const validProdSecret = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    process.env.SESSION_SECRET = validProdSecret;
+    const returnedProdSecret = getSessionSecret();
+    assert(returnedProdSecret === validProdSecret, 'Production mode accepts genuine >= 32 char private secret');
+
+    // Test: Token signing and verification work in production with valid secret
+    const prodSigned = await signSessionId(validUuid1);
+    const prodVerified = await verifySessionToken(prodSigned);
+    assert(prodVerified === validUuid1, 'Signs and verifies session token in production with valid secret');
+
+  } finally {
+    // Restore environment variables and state
+    // @ts-expect-error restoring NODE_ENV
+    process.env.NODE_ENV = savedNodeEnv;
+    if (savedSessionSecret !== undefined) {
+      process.env.SESSION_SECRET = savedSessionSecret;
+    } else {
+      delete process.env.SESSION_SECRET;
+    }
+    resetEphemeralSecretForTesting();
+  }
+
   // 2b. Trusted Proxy Mode (TRUST_PROXY_HEADERS === 'true')
   process.env.TRUST_PROXY_HEADERS = 'true';
   const trustedCfHeaders = new Headers({ 'cf-connecting-ip': '203.0.113.195' });

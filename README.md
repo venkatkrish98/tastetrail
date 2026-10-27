@@ -81,8 +81,11 @@ When visiting or exploring a city with limited time (2 to 5 hours), travelers an
 
 ## 🛡️ Security, Privacy & Ethical AI
 
-- **Key Isolation:** `QLOO_API_KEY` is strictly confined to server-side Node.js environment variables (`process.env.QLOO_API_KEY`). It is never bundled into client-side JavaScript, emitted in HTTP responses, or committed to Git.
-- **Rate Limiting & Payload Defense:** Max 20 requests/minute per client IP (HTTP 429 with `Retry-After`). Request body size bounded to 32KB (HTTP 413 Payload Too Large). Strict geographic coordinate bounds checking.
+- **Session Integrity & Anti-Spoofing:** Cryptographically HMAC-signed session cookies (`tt_session`) prevent client-side cookie forgery and rotation attacks.
+  - In production, `SESSION_SECRET` strictly requires a private, high-entropy secret (at least 32 random characters/bytes; e.g. `openssl rand -hex 32`). Missing, weak, or known placeholder secrets are rejected at startup.
+  - In development, an ephemeral in-memory secret is generated per process (sessions invalidate upon restart).
+- **Rate Limiting & Scope Notice:** Max 20 requests/minute per client. Request body size bounded to 32KB (HTTP 413 Payload Too Large). Strict geographic coordinate bounds checking.
+  - *Per-Instance Scope:* In-memory sliding window rate limits and singleflight Qloo probe caching operate per serverless instance / process on Vercel. They provide protection per instance, but are not globally synchronized across multiple independent serverless isolates unless backed by a shared external store (e.g., Upstash Redis).
 - **Aggregate Cultural Affinities:** Qloo recommendations are presented as collective cultural affinities across creative communities, **never as proof of an individual's personal identity, private preferences, or predictive surveillance.**
 - **No Personal Data Collected:** TasteTrail requires no user login, no tracking cookies, and stores zero personal identifiers.
 - **Truthful Operational Boundaries:** Qloo maps cultural taste affinities, not physical venue operations. Physical accessibility (wheelchair ramps), live opening hours, and real-time ticket prices are explicitly marked as unverified by Qloo and require direct venue confirmation.
@@ -98,7 +101,7 @@ When visiting or exploring a city with limited time (2 to 5 hours), travelers an
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/your-username/tastetrail.git
+git clone https://github.com/venkatkrish98/tastetrail.git
 cd tastetrail
 ```
 

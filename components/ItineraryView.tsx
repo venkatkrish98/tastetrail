@@ -191,10 +191,14 @@ export function ItineraryView({ plan }: ItineraryViewProps) {
                   Cultural Affinity Link: {stop.connectedAnchorName}
                 </span>
 
-                <span className="badge badge-qloo">
-                  {stop.qlooAffinityScore !== null
-                    ? `Qloo Affinity Index: ${stop.qlooAffinityScore}%`
-                    : 'Qloo Taste Match (Unscored Upstream)'}
+                <span className={stop.isSampleData ? 'badge badge-sample' : 'badge badge-qloo'}>
+                  {stop.isSampleData
+                    ? (stop.qlooAffinityScore !== null
+                        ? `Sample Affinity: ${stop.qlooAffinityScore}% (Offline Fixture)`
+                        : 'Sample Fixture (No Live Score)')
+                    : (stop.qlooAffinityScore !== null
+                        ? `Qloo Affinity Index: ${stop.qlooAffinityScore}%`
+                        : 'Qloo Taste Match (Unscored Upstream)')}
                 </span>
               </div>
               <p style={{ fontSize: '0.875rem', color: '#fef3c7', lineHeight: 1.5 }}>

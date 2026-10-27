@@ -132,7 +132,9 @@ export function ComparisonView({ plan }: ComparisonViewProps) {
                   With Qloo Taste Intelligence
                 </h4>
               </div>
-              <span className="badge badge-qloo">Culturally Grounded</span>
+              <span className={plan.isSampleData ? 'badge badge-sample' : 'badge badge-qloo'}>
+                {plan.isSampleData ? 'Culturally Grounded (Sample Fixture)' : 'Culturally Grounded (Live Qloo)'}
+              </span>
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -150,8 +152,10 @@ export function ComparisonView({ plan }: ComparisonViewProps) {
                     <span style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--text-main)' }}>
                       {stop.order}. {stop.placeName}
                     </span>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--accent-amber)' }}>
-                      {stop.qlooAffinityScore !== null ? `${stop.qlooAffinityScore}% Affinity` : 'Taste Match'}
+                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: plan.isSampleData ? 'var(--accent-indigo)' : 'var(--accent-amber)' }}>
+                      {stop.qlooAffinityScore !== null
+                        ? (plan.isSampleData ? `${stop.qlooAffinityScore}% Sample Affinity` : `${stop.qlooAffinityScore}% Qloo Affinity`)
+                        : (plan.isSampleData ? 'Sample Taste Match' : 'Qloo Taste Match')}
                     </span>
                   </div>
                   <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.35rem' }}>

@@ -7,32 +7,79 @@
  *   any hardcoded public default vulnerability.
  */
 
+const KNOWN_PLACEHOLDER_SECRETS = new Set([
+  'your_cryptographically_secure_random_hmac_secret_here',
+  'your_session_secret_here',
+  'change_this_secret',
+  'tastetrail_secure_session_secret_2026_default_key',
+  'replace_with_at_least_32_bytes_random_secret',
+]);
+
 let ephemeralRuntimeSecret: string | null = null;
 let warnedMissingSecret = false;
 
+/**
+ * Returns the active HMAC secret for session token signing and verification.
+ * 
+ * - Production: Strictly requires a private, stable SESSION_SECRET with at least 32 characters (256 bits).
+ *   Rejects missing, weak (< 32 chars), or known placeholder values by throwing an explicit Error.
+ * - Development: If SESSION_SECRET is unset or a placeholder, generates a dynamic per-process ephemeral secret.
+ *   Note: In development with an ephemeral secret, user sessions will become invalid after server restart.
+ */
 export function getSessionSecret(): string {
   const configuredSecret = process.env.SESSION_SECRET?.trim();
-  if (configuredSecret && configuredSecret.length >= 16) {
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (isProduction) {
+    if (!configuredSecret) {
+      throw new Error(
+        '[Security Fatal] SESSION_SECRET is not configured in production. ' +
+        'A stable, private secret with at least 32 random characters/bytes is strictly required. ' +
+        'Generate one with: openssl rand -hex 32'
+      );
+    }
+    if (KNOWN_PLACEHOLDER_SECRETS.has(configuredSecret) || configuredSecret.toLowerCase().includes('placeholder')) {
+      throw new Error(
+        '[Security Fatal] SESSION_SECRET in production contains a known placeholder value. ' +
+        'You must replace it with a genuine, cryptographically random secret of at least 32 characters/bytes.'
+      );
+    }
+    if (configuredSecret.length < 32) {
+      throw new Error(
+        `[Security Fatal] SESSION_SECRET in production is too weak (${configuredSecret.length} characters). ` +
+        'Production requires a stable, private secret of at least 32 random characters (256 bits).'
+      );
+    }
     return configuredSecret;
   }
 
-  if (process.env.NODE_ENV === 'production' && !configuredSecret && !warnedMissingSecret) {
-    warnedMissingSecret = true;
-    console.warn(
-      '[Security Warning] SESSION_SECRET is not configured in production environment. ' +
-      'Using dynamic per-process ephemeral secret. ' +
-      'Please set a permanent SESSION_SECRET (32+ chars) in your production environment variables.'
-    );
+  // Development / Test environment:
+  if (
+    configuredSecret &&
+    configuredSecret.length >= 16 &&
+    !KNOWN_PLACEHOLDER_SECRETS.has(configuredSecret)
+  ) {
+    return configuredSecret;
   }
 
   if (!ephemeralRuntimeSecret) {
     ephemeralRuntimeSecret = `${crypto.randomUUID()}-${crypto.randomUUID()}-${Date.now()}`;
+    if (!warnedMissingSecret) {
+      warnedMissingSecret = true;
+      console.warn(
+        '[Security Info] SESSION_SECRET is not set or is a placeholder in development. ' +
+        'An ephemeral in-memory secret has been generated for this process. ' +
+        'Note: User sessions will become invalid upon server restart. ' +
+        'Set SESSION_SECRET in .env.local for stable development sessions.'
+      );
+    }
   }
   return ephemeralRuntimeSecret;
 }
 
 export function resetEphemeralSecretForTesting(customSecret?: string): void {
   ephemeralRuntimeSecret = customSecret || null;
+  warnedMissingSecret = false;
 }
 
 const encoder = new TextEncoder();

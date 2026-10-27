@@ -156,7 +156,9 @@ export async function runTasteTrailAgent(
           usedSampleDataInSearch ? 'Sample Reference Catalog' : 'Live Qloo Taste Graph'
         })`,
     'completed',
-    `Verified Qloo Entity IDs: ${resolvedEntityIds.join(', ')}`,
+    usedSampleDataInSearch
+      ? `Sample fixture entity references: ${resolvedEntityIds.join(', ')}`
+      : `Live Qloo Entity IDs: ${resolvedEntityIds.join(', ')}`,
     usedSampleDataInSearch
   );
 
